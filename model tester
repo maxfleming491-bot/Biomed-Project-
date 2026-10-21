@@ -1,0 +1,32 @@
+import numpy as np
+rng = np.random.default_rng(0)
+
+def simulate_person(n_seg=100):
+    sex = rng.choice(["M", "F"])
+    age = rng.uniform(55, 90)
+    height = rng.normal(1.75 if sex == "M" else 1.62, 0.07)   # m
+    mass = rng.normal(85 if sex == "M" else 70, 12)           # kg
+
+    L = 0.26 * height                                         # femur length, m
+    dL = L / n_seg
+    d_out = rng.normal(0.028, 0.002)                          # m (placeholder)
+    d_in = d_out - 2 * 0.005                                  # m, cortical thickness placeholder
+    A = np.pi / 4 * (d_out**2 - d_in**2) * np.ones(n_seg)
+
+    # healthy cortical modulus, declining slightly with age (placeholder values)
+    E = np.full(n_seg, 18e9 * (1 - 0.003 * (age - 30)))
+
+    # Paget's: affected band with a density change -> stiffness change
+    start = rng.integers(0, n_seg - 20)
+    width = rng.integers(10, 40)
+    rho_factor = rng.uniform(0.6, 1.4)        # <1 lytic, >1 sclerotic
+    quality = 0.8                              # woven-bone tissue penalty
+    E[start:start + width] *= rho_factor**2 * quality   # E ~ rho^b, b≈2 as placeholder
+
+    F = 3 * mass * 9.81                        # ~3x body weight, walking
+    delta = F * np.sum(dL / (E * A))           # series springs
+    A_ref = A.mean()
+    return (F / A_ref) / (delta / L)           # effective modulus, Pa
+
+E_eff = np.array([simulate_person() for _ in range(5000)])
+print(E_eff.mean() / 1e9, E_eff.std() / 1e9, "GPa")
