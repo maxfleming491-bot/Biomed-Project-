@@ -45,9 +45,9 @@ PROX_FLARE = 1.9          # head / greater trochanter region
 DIST_FLARE = 2.4          # condyles
 
 # ---- mechanical parameters (NEW) ----------------------------------------
-# NOTE: placeholders, must be validated.
 G = 9.81                                  # m/s^2
 
+# NOTE: placeholders, must be validated.
 # Axial load as a multiple of body weight (uniform between these limits)
 LOAD_FACTOR_RANGE = (2.5, 3.0)
 
