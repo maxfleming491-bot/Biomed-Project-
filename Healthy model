@@ -15,7 +15,7 @@ HEIGHT_PARAMS = {
 
 # ---- femur parameters ---------------------------------------------------
 # Femur length as a fraction of standing height: (mean, SD)
-FEMUR_RATIO = {"M": (0.270, 0.010), "F": (0.270, 0.010)}
+FEMUR_RATIO = {"M": (0.270, 0.010), "F": (0.270, 0.010)} #Values need to be changed
 
 # Mid-shaft outer diameter in mm: (mean, SD)
 SHAFT_DIAM_MM = {"M": (28.0, 2.3), "F": (25.0, 2.2)}
