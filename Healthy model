@@ -14,18 +14,28 @@ HEIGHT_PARAMS = {
 }
 
 # ---- femur parameters ---------------------------------------------------
+# NOTE: all values in this block are placeholders and must be validated.
+
 # Femur length as a fraction of standing height: (mean, SD)
-FEMUR_RATIO = {"M": (0.270, 0.010), "F": (0.270, 0.010)} #Values need to be changed
+# VALIDATE: against papers reporting femur length and stature by sex in a similar age range.
+FEMUR_RATIO = {"M": (0.270, 0.010), "F": (0.270, 0.010)}
 
 # Mid-shaft outer diameter in mm: (mean, SD)
+# VALIDATE: against CT/pQCT/DXA papers reporting femoral mid-shaft outer diameter by sex and age.
 SHAFT_DIAM_MM = {"M": (28.0, 2.3), "F": (25.0, 2.2)}
 
 # Typical femur length (cm) used to centre the length-diameter relationship
+# VALIDATE: should equal the mean femur length of your sampled population per sex.
 FEMUR_LEN_REF_CM = {"M": 46.3, "F": 42.7}
+
+# VALIDATE: against a paper reporting the correlation between femur length and mid-shaft diameter.
 RHO_LEN_DIAM = 0.4        # correlation between femur length and shaft diameter
+
+# VALIDATE: should match the SD of femur length in your sampled population (or a published SD).
 SD_LEN_CM = 2.5           # approx SD of femur length, used to turn rho into a slope
 
 # Extra parameters for the bone-shaped model (ratio of end width to mid-shaft width)
+# VALIDATE: against measured femoral head/trochanter width and distal epicondylar breadth relative to mid-shaft diameter.
 PROX_FLARE = 1.9          # head / greater trochanter region
 DIST_FLARE = 2.4          # condyles
 
@@ -54,17 +64,10 @@ def sample_shaft_diameter_mm(sex, length_cm, rng):
     return mean_d + slope * (length_cm - FEMUR_LEN_REF_CM[sex]) + rng.normal(0, resid_sd)
 
 
-# ---- geometry models ----------------------------------------------------
-# Model A: single cylinder
-def cylinder_femur(length_cm, diameter_mm):
-    r_cm = diameter_mm / 20                                  # mm diameter -> cm radius
-    return {"length_cm": length_cm,
-            "diameter_mm": diameter_mm,
-            "volume_cm3": np.pi * r_cm**2 * length_cm}
-
-# Model B: stack of discs with varying diameter
+# ---- geometry model (stack of discs with varying diameter) --------------
 def diameter_profile(s):
     """Diameter multiplier along the bone; s runs 0 (hip end) to 1 (knee end)."""
+    # VALIDATE: fit the end positions and widths (0.04, 0.07, 1.00, 0.10) to measured femur width profiles from CT/DXA or a shape model.
     prox = (PROX_FLARE - 1) * np.exp(-((s - 0.04) / 0.07) ** 2)
     dist = (DIST_FLARE - 1) * np.exp(-((s - 1.00) / 0.10) ** 2)
     return 1 + prox + dist
@@ -87,7 +90,6 @@ def sample_person(rng):
     diam = sample_shaft_diameter_mm(sex, length, rng)
     return {"sex": sex, "age": age, "height_cm": height,
             "femur_length_cm": length, "shaft_diam_mm": diam,
-            "cyl": cylinder_femur(length, diam),
             "shaped": shaped_femur(length, diam, numseg)}
 
 
@@ -109,5 +111,4 @@ if __name__ == "__main__":
         print(sex,
               f"femur length {np.mean([p['femur_length_cm'] for p in sub]):.1f} cm,",
               f"shaft diameter {np.mean([p['shaft_diam_mm'] for p in sub]):.1f} mm,",
-              f"cylinder vol {np.mean([p['cyl']['volume_cm3'] for p in sub]):.0f} cm3,",
               f"shaped vol {np.mean([p['shaped']['volume_cm3'] for p in sub]):.0f} cm3")
