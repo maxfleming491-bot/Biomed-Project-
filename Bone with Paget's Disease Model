@@ -1,1 +1,182 @@
+import numpy as np
 
+rng = np.random.default_rng()
+numseg = 100                 # spatial slices along the femur (as in the healthy model)
+
+# =========================================================================
+# NOTE: every value in the PAGET and MECHANICAL blocks below is a PLACEHOLDER.
+# None of them come from papers. ALL of them must be validated against the
+# literature (or your own data) before the results are used for anything.
+# =========================================================================
+
+# ---- person generator ---------------------------------------------------
+P_MALE = 0.5
+AGE_MIN, AGE_MAX = 50, 85                # Paget's only relevant from 50; inclusive
+
+# (age_low, age_high) -> (mean height cm, SD cm); low inclusive, high exclusive
+# VALIDATE: the 50-64 band reuses the 55-64 values as a placeholder.
+HEIGHT_PARAMS = {
+    "M": {(50, 65): (173.3, 6.7), (65, 75): (171.8, 6.7), (75, 86): (168.4, 6.4)},
+    "F": {(50, 65): (160.1, 7.5), (65, 75): (158.6, 6.2), (75, 86): (154.8, 6.4)},
+}
+
+# ---- healthy femur parameters (from the healthy model, still placeholders) ----
+FEMUR_RATIO = {"M": (0.270, 0.010), "F": (0.270, 0.010)}      # VALIDATE
+SHAFT_DIAM_MM = {"M": (28.0, 2.3), "F": (25.0, 2.2)}          # VALIDATE
+FEMUR_LEN_REF_CM = {"M": 46.3, "F": 42.7}                     # VALIDATE
+RHO_LEN_DIAM = 0.4                                            # VALIDATE
+SD_LEN_CM = 2.5                                               # VALIDATE
+PROX_FLARE = 1.9                                              # VALIDATE
+DIST_FLARE = 2.4                                              # VALIDATE
+
+# ---- healthy bone mechanical properties (placeholders) ------------------
+# VALIDATE: against papers reporting cortical bone modulus/strength/porosity for this age range.
+E_HEALTHY_GPA = 17.0          # cortical Young's modulus
+YIELD_HEALTHY_MPA = 110.0     # cortical yield strength
+POROSITY_HEALTHY = 0.05       # fractional cortical porosity
+
+# ---- Paget's disease timeline -------------------------------------------
+# Disease time is counted in segments at 5 segments per year (1 segment = 0.2 y).
+SEGMENTS_PER_YEAR = 5
+
+# Onset age is sampled uniformly between ONSET_AGE_MIN and the patient's current age,
+# so a 50-year-old has had little time for disease and a 75-year-old up to ~25 years.
+# VALIDATE: onset-age distribution against epidemiology of Paget's disease (incidence by age).
+ONSET_AGE_MIN = 50
+
+# Lesion starts at one end of the femur and the active front advances along the bone.
+# VALIDATE: spread rate (cm/year) against longitudinal radiological studies of lesion progression.
+LESION_FRONT_CM_PER_YEAR = 1.0
+# VALIDATE: probability the lesion starts at the proximal (hip) end vs the distal (knee) end.
+P_START_PROXIMAL = 0.7
+
+# Local severity rises towards 1 with time since the front reached that slice:
+#   severity = 1 - exp(-local_duration / TAU_YEARS)
+# VALIDATE: time constant of the local remodelling response.
+TAU_YEARS = 10.0
+
+# Between-patient variability in how severe the disease gets (lognormal multiplier on severity, capped at 1)
+# VALIDATE: SD against spread of severity in clinical series.
+SEVERITY_SCALE_SIGMA = 0.25
+
+# ---- Paget's effect sizes at full severity (placeholders) ---------------
+# VALIDATE: all of these against CT/DXA/biomechanical studies of pagetic femora.
+MAX_DIAM_EXPANSION = 0.25     # fractional increase in outer diameter (bone enlargement)
+MAX_LENGTH_INCREASE = 0.02    # fractional increase in femur length across the whole bone
+E_PAGET_FRAC = 0.60           # modulus as a fraction of healthy at full severity
+YIELD_PAGET_FRAC = 0.55       # yield strength as a fraction of healthy at full severity
+POROSITY_PAGET = 0.25         # cortical porosity at full severity
+MAX_BOW_MM = 15.0             # peak lateral bowing at full severity over the whole bone
+
+
+# ---- sampling functions -------------------------------------------------
+def sample_sex(rng):
+    return "M" if rng.random() < P_MALE else "F"
+
+def sample_age(rng):
+    return int(rng.integers(AGE_MIN, AGE_MAX + 1))
+
+def sample_height_cm(sex, age, rng):
+    for (lo, hi), (mean, sd) in HEIGHT_PARAMS[sex].items():
+        if lo <= age < hi:
+            return rng.normal(mean, sd)
+    raise ValueError(f"No height band for sex={sex}, age={age}")
+
+def sample_femur_length_cm(sex, height_cm, rng):
+    mean, sd = FEMUR_RATIO[sex]
+    return height_cm * rng.normal(mean, sd)
+
+def sample_shaft_diameter_mm(sex, length_cm, rng):
+    mean_d, sd_d = SHAFT_DIAM_MM[sex]
+    slope = RHO_LEN_DIAM * sd_d / SD_LEN_CM
+    resid_sd = sd_d * np.sqrt(1 - RHO_LEN_DIAM**2)
+    return mean_d + slope * (length_cm - FEMUR_LEN_REF_CM[sex]) + rng.normal(0, resid_sd)
+
+def sample_disease_duration_years(age, rng):
+    """Years since onset. Onset can't be before ONSET_AGE_MIN, so duration <= age - 50."""
+    onset_age = rng.uniform(ONSET_AGE_MIN, max(age, ONSET_AGE_MIN + 1e-9))
+    return age - onset_age
+
+
+# ---- healthy geometry (stack of discs with varying diameter) ------------
+def diameter_profile(s):
+    """Diameter multiplier along the bone; s runs 0 (hip end) to 1 (knee end)."""
+    # VALIDATE: end positions and widths against measured femur width profiles.
+    prox = (PROX_FLARE - 1) * np.exp(-((s - 0.04) / 0.07) ** 2)
+    dist = (DIST_FLARE - 1) * np.exp(-((s - 1.00) / 0.10) ** 2)
+    return 1 + prox + dist
+
+
+# ---- Paget's femur ------------------------------------------------------
+def pagetic_femur(length_cm, shaft_diam_mm, duration_years, rng, numseg=100):
+    s = (np.arange(numseg) + 0.5) / numseg                    # slice midpoints, 0 = hip end
+    disease_segments = int(round(duration_years * SEGMENTS_PER_YEAR))
+
+    # Where does the lesion start, and when does its front reach each slice?
+    from_prox = rng.random() < P_START_PROXIMAL
+    dist_from_start_cm = (s if from_prox else 1 - s) * length_cm
+    arrival_years = dist_from_start_cm / LESION_FRONT_CM_PER_YEAR
+    local_years = np.clip(duration_years - arrival_years, 0, None)   # time each slice has been diseased
+
+    # Local severity, with a per-patient scale factor
+    sev_scale = rng.lognormal(0, SEVERITY_SCALE_SIGMA)
+    severity = np.clip((1 - np.exp(-local_years / TAU_YEARS)) * sev_scale, 0, 1)
+    affected = local_years > 0
+
+    # Geometry: enlargement, lengthening, bowing
+    d_healthy_mm = shaft_diam_mm * diameter_profile(s)
+    d_mm = d_healthy_mm * (1 + MAX_DIAM_EXPANSION * severity)
+    mean_sev = severity.mean()
+    length_new_cm = length_cm * (1 + MAX_LENGTH_INCREASE * mean_sev)
+    bow_mm = MAX_BOW_MM * mean_sev * 4 * s * (1 - s)          # parabolic lateral bow, zero at both ends
+    dz = length_new_cm / numseg
+    volume = np.sum(np.pi * (d_mm / 20) ** 2 * dz)
+
+    # Mechanical properties (per slice)
+    E_gpa = E_HEALTHY_GPA * (1 - (1 - E_PAGET_FRAC) * severity)
+    yield_mpa = YIELD_HEALTHY_MPA * (1 - (1 - YIELD_PAGET_FRAC) * severity)
+    porosity = POROSITY_HEALTHY + (POROSITY_PAGET - POROSITY_HEALTHY) * severity
+
+    # Bending rigidity EI (N m^2), treating each slice as a solid circular section (simplification)
+    I_m4 = np.pi * (d_mm * 1e-3) ** 4 / 64
+    EI = E_gpa * 1e9 * I_m4
+    EI_healthy = E_HEALTHY_GPA * 1e9 * np.pi * (d_healthy_mm * 1e-3) ** 4 / 64
+
+    return {
+        "length_cm": length_new_cm, "z_cm": s * length_new_cm,
+        "duration_years": duration_years, "disease_segments": disease_segments,
+        "lesion_from_prox": from_prox, "lesion_extent_frac": affected.mean(),
+        "severity": severity, "affected": affected,
+        "diameter_mm": d_mm, "bow_mm": bow_mm, "volume_cm3": volume,
+        "E_gpa": E_gpa, "yield_mpa": yield_mpa, "porosity": porosity,
+        "EI_Nm2": EI, "EI_rel_healthy": EI / EI_healthy,
+    }
+
+
+# ---- full person --------------------------------------------------------
+def sample_person(rng):
+    sex = sample_sex(rng)
+    age = sample_age(rng)
+    height = sample_height_cm(sex, age, rng)
+    length = sample_femur_length_cm(sex, height, rng)
+    diam = sample_shaft_diameter_mm(sex, length, rng)
+    duration = sample_disease_duration_years(age, rng)
+    return {"sex": sex, "age": age, "height_cm": height,
+            "femur_length_cm": length, "shaft_diam_mm": diam,
+            "disease_years": duration,
+            "pagetic": pagetic_femur(length, diam, duration, rng, numseg)}
+
+
+# ---- check disease burden rises with age --------------------------------
+if __name__ == "__main__":
+    people = [sample_person(rng) for _ in range(5000)]
+    print("age band | mean duration (y) | mean segments | lesion extent | peak severity | min EI / healthy")
+    for lo, hi in [(50, 60), (60, 70), (70, 80), (80, 86)]:
+        sub = [p for p in people if lo <= p["age"] < hi]
+        pg = [p["pagetic"] for p in sub]
+        print(f"{lo}-{hi-1}: "
+              f"{np.mean([p['disease_years'] for p in sub]):6.1f}  "
+              f"{np.mean([q['disease_segments'] for q in pg]):7.1f}  "
+              f"{np.mean([q['lesion_extent_frac'] for q in pg]):6.2f}  "
+              f"{np.mean([q['severity'].max() for q in pg]):6.2f}  "
+              f"{np.mean([q['EI_rel_healthy'].min() for q in pg]):6.2f}  (n={len(sub)})")
