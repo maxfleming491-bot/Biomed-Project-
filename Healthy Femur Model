@@ -39,6 +39,36 @@ SD_LEN_CM = 2.5           # approx SD of femur length, used to turn rho into a s
 PROX_FLARE = 1.9          # head / greater trochanter region
 DIST_FLARE = 2.4          # condyles
 
+# ---- mass and mineral-loss parameters -----------------------------------
+# Effective whole-bone density (g/cm3) at the reference age, averaged over the solid-disc
+# volume (so it already accounts for the marrow cavity and trabecular bone).
+# VALIDATE: choose so that modelled femur mass matches measured femur mass (e.g. from cadaveric or CT-based studies) by sex.
+BONE_DENSITY_REF = {"M": 1.25, "F": 1.20}
+
+# Age at which BONE_DENSITY_REF applies (loss is measured from here).
+# VALIDATE: against the age at which femoral BMD begins to decline in your reference data.
+AGE_REF = 50
+
+# Fractional loss of bone mineral density per year after AGE_REF.
+# VALIDATE: against longitudinal or cross-sectional femoral BMD-vs-age data (DXA/QCT) by sex; women usually lose faster around menopause.
+BMD_LOSS_PER_YEAR = {"M": 0.004, "F": 0.008}
+
+# Person-to-person SD of the density factor (fraction of reference density).
+# VALIDATE: against the SD of femoral BMD at a given age and sex in a population study.
+BMD_FACTOR_SD = 0.10
+
+# Lowest allowed density factor, to stop unrealistic values.
+# VALIDATE: against the lowest plausible femoral BMD relative to young adults in older populations.
+BMD_FACTOR_MIN = 0.30
+
+# Ultimate bending strength (MPa) of the bone material at the reference density.
+# VALIDATE: against mechanical testing of femoral cortical bone (typical reported ultimate strengths).
+SIGMA_ULT_REF_MPA = 150.0
+
+# Exponent linking strength to density: strength ~ (density factor) ** exponent.
+# VALIDATE: against power-law density-strength relationships from bone mechanical testing (e.g. Carter & Hayes style fits).
+STRENGTH_DENSITY_EXP = 2.0
+
 
 # ---- sampling functions -------------------------------------------------
 def sample_sex(rng):
@@ -63,6 +93,11 @@ def sample_shaft_diameter_mm(sex, length_cm, rng):
     resid_sd = sd_d * np.sqrt(1 - RHO_LEN_DIAM**2)          # keeps overall SD ~ sd_d
     return mean_d + slope * (length_cm - FEMUR_LEN_REF_CM[sex]) + rng.normal(0, resid_sd)
 
+def sample_bmd_factor(sex, age, rng):
+    """Density relative to the reference density: falls with age, with person-to-person scatter."""
+    mean_factor = 1 - BMD_LOSS_PER_YEAR[sex] * (age - AGE_REF)
+    return max(BMD_FACTOR_MIN, rng.normal(mean_factor, BMD_FACTOR_SD))
+
 
 # ---- geometry model (stack of discs with varying diameter) --------------
 def diameter_profile(s):
@@ -81,6 +116,23 @@ def shaped_femur(length_cm, shaft_diam_mm, numseg=100):
             "diameter_mm": d_mm, "volume_cm3": volume}
 
 
+# ---- mass and strength --------------------------------------------------
+def bone_mass_and_strength(sex, bmd_factor, bone):
+    """Add mass (g) and bending strength to the shaped femur using the density factor."""
+    density = BONE_DENSITY_REF[sex] * bmd_factor              # g/cm3
+    mass_g = density * bone["volume_cm3"]
+
+    sigma_mpa = SIGMA_ULT_REF_MPA * bmd_factor ** STRENGTH_DENSITY_EXP
+    # VALIDATE: a solid circular section overstates bending strength; compare with a hollow cortical-shell model or measured femur failure loads.
+    section_modulus_mm3 = np.pi * bone["diameter_mm"] ** 3 / 32            # solid circle, per slice
+    failure_moment_Nm = sigma_mpa * section_modulus_mm3 / 1000             # N*mm -> N*m, per slice
+
+    return {"density_g_cm3": density, "mass_g": mass_g,
+            "sigma_ult_mpa": sigma_mpa,
+            "failure_moment_Nm": failure_moment_Nm,
+            "weakest_moment_Nm": failure_moment_Nm.min()}      # weakest slice limits the bone
+
+
 # ---- full person --------------------------------------------------------
 def sample_person(rng):
     sex = sample_sex(rng)
@@ -88,9 +140,13 @@ def sample_person(rng):
     height = sample_height_cm(sex, age, rng)
     length = sample_femur_length_cm(sex, height, rng)
     diam = sample_shaft_diameter_mm(sex, length, rng)
+    bone = shaped_femur(length, diam, numseg)
+    bmd_factor = sample_bmd_factor(sex, age, rng)
+    mech = bone_mass_and_strength(sex, bmd_factor, bone)
     return {"sex": sex, "age": age, "height_cm": height,
             "femur_length_cm": length, "shaft_diam_mm": diam,
-            "shaped": shaped_femur(length, diam, numseg)}
+            "bmd_factor": bmd_factor,
+            "shaped": bone, "mech": mech}
 
 
 # ---- check the sampler reproduces your inputs --------------------------
@@ -112,3 +168,13 @@ if __name__ == "__main__":
               f"femur length {np.mean([p['femur_length_cm'] for p in sub]):.1f} cm,",
               f"shaft diameter {np.mean([p['shaft_diam_mm'] for p in sub]):.1f} mm,",
               f"shaped vol {np.mean([p['shaped']['volume_cm3'] for p in sub]):.0f} cm3")
+
+    # mass and strength vs age
+    for sex in ("M", "F"):
+        for (lo, hi) in [(55, 65), (65, 75), (75, 86)]:
+            sub = [p for p in people if p["sex"] == sex and lo <= p["age"] < hi]
+            print(f"{sex} {lo}-{hi-1}: "
+                  f"BMD factor {np.mean([p['bmd_factor'] for p in sub]):.2f}, "
+                  f"mass {np.mean([p['mech']['mass_g'] for p in sub]):.0f} g, "
+                  f"weakest-section failure moment "
+                  f"{np.mean([p['mech']['weakest_moment_Nm'] for p in sub]):.0f} N*m")
