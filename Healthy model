@@ -3,7 +3,7 @@ rng = np.random.default_rng()
 numseg=100 
 import numpy as np
 
-# ---- values to replace with your own ----------------------------------
+#person generator 
 P_MALE = 0.5                             # probability a sampled person is male
 AGE_MIN, AGE_MAX = 55, 85                # inclusive
 
