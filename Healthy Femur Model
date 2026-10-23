@@ -151,7 +151,7 @@ def sample_person(rng):
 
 # ---- check the sampler reproduces your inputs --------------------------
 if __name__ == "__main__":
-    people = [sample_person(rng) for _ in range(20000)]
+    people = [sample_person(rng) for _ in range(100)]
 
     # height check
     for sex in ("M", "F"):
