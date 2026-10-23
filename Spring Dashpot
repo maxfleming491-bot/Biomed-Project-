@@ -1,0 +1,31 @@
+import numpy as np
+import scipy as sp
+import matplotlib.pyplot as plt
+
+def Amat(k1, k2, c):
+    return np.array([[0, 1, 0],
+                     [-(k1+k2), 0, k2],
+                     [k2/c, 0, -k2/c]])
+
+v0 = 1 # initial velocity (downwards)
+A = Amat(1, 2, 3) # choose k1, k2 and c here
+print(A)
+
+eig = np.linalg.eig(A)
+ev = eig.eigenvalues
+print(ev) # should all have -ve real part (for stability)
+
+# solution (x vector)
+def xv(t):
+    return sp.linalg.expm(A*t) @ np.array([0, v0, 0])
+
+# compute and plot solution at a bunch of times
+times = np.arange(0, 10, 0.1)
+out = np.array(list(map(xv, times)))
+print(out.shape)
+
+for i in range(3):
+    plt.plot(times, out[:,i])
+plt.legend(['x','v','y'])
+plt.xlabel('Time (t)')
+plt.show()
